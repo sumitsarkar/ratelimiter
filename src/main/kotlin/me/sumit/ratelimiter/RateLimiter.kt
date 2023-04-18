@@ -1,22 +1,19 @@
 package me.sumit.ratelimiter
 
 import kotlinx.coroutines.*
-import kotlinx.coroutines.channels.ReceiveChannel
-import kotlinx.coroutines.channels.produce
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.flow
+import mu.KotlinLogging
 import java.time.Duration
-import java.util.concurrent.atomic.AtomicInteger
-import kotlin.coroutines.CoroutineContext
-import kotlin.coroutines.EmptyCoroutineContext
+
+private val logger = KotlinLogging.logger {}
 
 interface RateLimitBuffer<T> {
     val data: Array<RateLimitingItem<T>?>
     val duration: Duration
-
     fun insert(item: RateLimitingItem<T>): Boolean
-    fun peekOldest(): RateLimitingItem<T>?
-    fun hasCapacity(): Boolean
+    suspend fun hasCapacity(): Boolean
 
-    fun canBeScheduled(): Boolean
     suspend fun causeDelay()
 }
 
@@ -28,78 +25,26 @@ interface RateLimitingItem<T> : Comparable<RateLimitingItem<T>> {
 }
 
 data class Throttled<T>(
-        val item: T,
-        val acknowledgement: RateLimitingItem<T>
+    val item: T,
+    val acknowledgement: RateLimitingItem<T>
 )
 
-@ExperimentalCoroutinesApi
 fun <T> CoroutineScope.rateLimiter(
-        receiveChannel: ReceiveChannel<T>,
-        buffer: RateLimitBuffer<T>,
-        pushItemToBuffer: (Long, Long?, T) -> RateLimitingItem<T>
-) = produce(capacity = buffer.data.size) {
-    for (item in receiveChannel) {
+    receiveFlow: Flow<T>,
+    buffer: RateLimitBuffer<T>,
+    pushItemToBuffer: (Long, Long?, T) -> RateLimitingItem<T>
+): Flow<Throttled<T>> = flow {
+    receiveFlow.collect { item ->
+        var acknowledgement: RateLimitingItem<T>
         scheduler@ while (true) {
-            if (!buffer.canBeScheduled()) {
+            acknowledgement = pushItemToBuffer(System.nanoTime(), null, item)
+            if (!buffer.insert(acknowledgement)) {
+                logger.debug { "Causing Delay" }
                 buffer.causeDelay()
                 continue@scheduler
             } else break@scheduler
         }
-        val acknowledgement = pushItemToBuffer(System.nanoTime(), null, item)
 
-        buffer.insert(acknowledgement)
-        send(Throttled(item, acknowledgement))
+        emit(Throttled(item, acknowledgement))
     }
 }
-
-
-@ExperimentalCoroutinesApi
-suspend inline fun <E> ReceiveChannel<E>.consumeEach(
-        maxConcurrency: Int,
-        initialConcurrency: Int = 10,
-        coroutineContext: CoroutineContext = EmptyCoroutineContext,
-        crossinline action: suspend (E) -> Unit
-) =
-        withContext(coroutineContext) {
-
-            if (maxConcurrency <= 0)
-                if (initialConcurrency > maxConcurrency)
-                    throw IllegalArgumentException("initialConcurrency must be less than or equal to maxConcurrency")
-                else if (initialConcurrency < 0)
-                    throw IllegalArgumentException("Can not have a negative initialConcurrency")
-
-
-            val busy = AtomicInteger(0)
-
-            val workers = MutableList(Integer.min(maxConcurrency, initialConcurrency)) {
-                launch {
-                    while (isActive && !(isClosedForReceive && isEmpty)) {
-                        busy.incrementAndGet()
-                        action(this@consumeEach.receive())
-                        busy.decrementAndGet()
-                    }
-                }
-            }
-
-            if (maxConcurrency > initialConcurrency || maxConcurrency <= 0) {
-                while (isActive && !(isClosedForReceive && isEmpty) && (workers.size < maxConcurrency || maxConcurrency <= 0)) {
-                    if (busy.get() == workers.size) {
-                        val received = receive()
-
-                        workers += launch {
-                            busy.incrementAndGet()
-                            action(received)
-                            busy.decrementAndGet()
-
-                            while (isActive && !(isClosedForReceive && isEmpty)) {
-                                busy.incrementAndGet()
-                                action(this@consumeEach.receive())
-                                busy.decrementAndGet()
-                            }
-                        }
-                    }
-                    delay(2)
-                }
-            }
-            workers.joinAll()
-        }

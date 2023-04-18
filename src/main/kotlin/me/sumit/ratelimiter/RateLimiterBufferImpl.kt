@@ -1,7 +1,10 @@
 package me.sumit.ratelimiter
 
 import kotlinx.coroutines.delay
+import mu.KotlinLogging
 import java.time.Duration
+
+private val logger = KotlinLogging.logger {}
 
 class RateLimitBufferImpl<T>(private val capacity: Int, override val duration: Duration) : RateLimitBuffer<T> {
     override val data: Array<RateLimitingItem<T>?> = arrayOfNulls(capacity)
@@ -12,18 +15,18 @@ class RateLimitBufferImpl<T>(private val capacity: Int, override val duration: D
     override fun insert(item: RateLimitingItem<T>): Boolean {
         // Find write-able position
         // Either find a null position in the array or find an item that satisfies the isFulfilled for nullability
-        var writePosition = data.indexOfFirst { it == null }
-        if (writePosition == -1) {
-            writePosition = data.filterNotNull().indexOfFirst { it.isFulfilled() }
-        }
+        val writePosition = findWritablePosition()
+
         return when {
             writePosition < 0 -> false
             else -> {
                 return when {
                     data[writePosition] != null -> {
+                        logger.debug { "Overwriting ${data[writePosition]?.data} with ${item.data}" }
                         data[writePosition] = item
                         true
                     }
+
                     else -> {
                         data[writePosition] = item
                         size++
@@ -35,7 +38,28 @@ class RateLimitBufferImpl<T>(private val capacity: Int, override val duration: D
     }
 
     @Synchronized
-    override fun peekOldest(): RateLimitingItem<T>? {
+    private fun findWritablePosition(): Int {
+        val indexedData = data.withIndex()
+        val nullPosition = indexedData.find { it.value == null }
+        if (nullPosition != null)
+            return nullPosition.index
+
+        val oldestItem = indexedData.filter { it.value != null }
+            .minBy { (_, value) -> value!!.startTime }
+
+        return if (oldestItem.value!!.isFulfilled()) {
+            val timeElapsed = System.nanoTime().minus(oldestItem.value!!.endTime!!)
+            logger.debug { "Elapsed Time: $timeElapsed" }
+            if (timeElapsed >= duration.toNanos())
+                oldestItem.index
+            else
+                -1
+        } else {
+            -1
+        }
+    }
+
+    fun peekOldest(): RateLimitingItem<T>? {
         val sortedNonNullList = data.filterNotNull().sorted()
         return when {
             sortedNonNullList.isNotEmpty() -> sortedNonNullList.find { it.endTime != null } ?: sortedNonNullList[0]
@@ -43,21 +67,9 @@ class RateLimitBufferImpl<T>(private val capacity: Int, override val duration: D
         }
     }
 
-    @Synchronized
-    override fun hasCapacity(): Boolean {
+    override suspend fun hasCapacity(): Boolean {
         return when {
             size < capacity -> true
-            else -> false
-        }
-    }
-
-    override fun canBeScheduled(): Boolean {
-        if (this.hasCapacity()) return true
-        val oldestItem = this.peekOldest()
-
-        return when {
-            oldestItem?.isFulfilled() == false -> false
-            oldestItem?.isFulfilled() == true && System.nanoTime().minus(oldestItem.endTime!!) >= duration.toNanos() -> true
             else -> false
         }
     }
@@ -69,12 +81,13 @@ class RateLimitBufferImpl<T>(private val capacity: Int, override val duration: D
 }
 
 
-class RateLimitingItemImpl<T>(override val startTime: Long, override var endTime: Long?, override val data: T) : RateLimitingItem<T> {
+class RateLimitingItemImpl<T>(override val startTime: Long, override var endTime: Long?, override val data: T) :
+    RateLimitingItem<T> {
     override fun isFulfilled(): Boolean {
         return endTime != null
     }
 
     override fun compareTo(other: RateLimitingItem<T>): Int {
-        return (other.endTime?.let { this.endTime?.compareTo(it) ?: 1}) ?: -1
+        return (other.endTime?.let { this.endTime?.compareTo(it) ?: 1 }) ?: -1
     }
 }
