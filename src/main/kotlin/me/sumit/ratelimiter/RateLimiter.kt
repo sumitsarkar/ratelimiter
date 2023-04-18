@@ -12,8 +12,6 @@ interface RateLimitBuffer<T> {
     val data: Array<RateLimitingItem<T>?>
     val duration: Duration
     fun insert(item: RateLimitingItem<T>): Boolean
-    suspend fun hasCapacity(): Boolean
-
     suspend fun causeDelay()
 }
 

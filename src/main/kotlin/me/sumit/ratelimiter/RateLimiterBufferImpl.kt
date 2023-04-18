@@ -8,8 +8,6 @@ private val logger = KotlinLogging.logger {}
 
 class RateLimitBufferImpl<T>(private val capacity: Int, override val duration: Duration) : RateLimitBuffer<T> {
     override val data: Array<RateLimitingItem<T>?> = arrayOfNulls(capacity)
-    var size = 0
-        private set
 
     @Synchronized
     override fun insert(item: RateLimitingItem<T>): Boolean {
@@ -29,7 +27,6 @@ class RateLimitBufferImpl<T>(private val capacity: Int, override val duration: D
 
                     else -> {
                         data[writePosition] = item
-                        size++
                         true
                     }
                 }
@@ -64,13 +61,6 @@ class RateLimitBufferImpl<T>(private val capacity: Int, override val duration: D
         return when {
             sortedNonNullList.isNotEmpty() -> sortedNonNullList.find { it.endTime != null } ?: sortedNonNullList[0]
             else -> null
-        }
-    }
-
-    override suspend fun hasCapacity(): Boolean {
-        return when {
-            size < capacity -> true
-            else -> false
         }
     }
 

@@ -17,27 +17,23 @@ internal class RateLimiterKtTest {
 
         val buffer = RateLimitBufferImpl<Int>(2, Duration.ofSeconds(1))
 
-        launch {
-            val throttledFlow = rateLimiter(flowCreator(), buffer) { startTime, endTime, item ->
-                RateLimitingItemImpl(startTime, endTime, item)
-            }
-            logger.info { "[${Thread.currentThread().name}]: Let's start our jobs!" }
-
-            launch {
-                val totalTime = measureTimeMillis {
-                    throttledFlow.collect { item ->
-                        logger.debug { "Received $item" }
-                        item.acknowledgement.endTime = System.nanoTime()
-                    }
-                }
-                logger.info { "Total time: $totalTime" }
-                assert(totalTime > 5000)
-                assert(totalTime < 6000)
-            }
-
+        val throttledFlow = rateLimiter(flowCreator(), buffer) { startTime, endTime, item ->
+            RateLimitingItemImpl(startTime, endTime, item)
         }
+        logger.info { "[${Thread.currentThread().name}]: Let's start our jobs!" }
 
-        logger.info { "All Done!" }
+        launch {
+            val totalTime = measureTimeMillis {
+                throttledFlow.collect { item ->
+                    logger.debug { "Received $item" }
+                    item.acknowledgement.endTime = System.nanoTime()
+                }
+            }
+            logger.info { "Total time: $totalTime" }
+            assert(totalTime > 5000)
+            assert(totalTime < 6000)
+            logger.info { "All Done!" }
+        }
     }
 
     private fun flowCreator(): Flow<Int> = flow {
